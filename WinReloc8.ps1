@@ -1,14 +1,16 @@
-<#
+﻿<#
 WinReloc8
    A PowerShell script by Ben Kennish (ben@kennish.net)
 
-Allows easily relocating a folder from one place to another (e.g. on a 
-different hard disk), creating a redirecting 'junction' which means that any 
-app that is set up to find the folder in the original location will still work 
+Allows easily relocating a folder from one place to another (e.g. on a
+different hard disk), creating a redirecting 'junction' which means that any
+app that is set up to find the folder in the original location will still work
 fine.
 
-Technical info: the existing location of the folder must be on an NTFS 
+Technical info: the existing location of the folder must be on an NTFS
 formatted partition
+
+TODO: calculate disk space required for the move and check there is enough space
 
 TODO: have a "Simple" mode (and default to it?) where it will have a standard folder location, such as X:\Reloc8d and the user selects a folder, and then a drive (excluding the drive hosting the original folder) to move to.  Will user have permission to create X:\Reloc8d\ by default?
 
@@ -21,7 +23,8 @@ param (
     [string]$dst,
 
     [switch]$ChooseDestPath,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$NoSizeCheck
 )
 
 # everyone loves UTF-8, right?
@@ -29,9 +32,9 @@ param (
 
 Set-StrictMode -Version Latest   # stricter rules = cleaner code  :)
 
-# default behavior for non-terminating errors (i.e., errors that don’t normally 
+# default behavior for non-terminating errors (i.e., errors that don’t normally
 # stop execution, like warnings)
-# global preference variable that affects all cmdlets and functions that you 
+# global preference variable that affects all cmdlets and functions that you
 # run after this line is executed.
 $ErrorActionPreference = "Stop"
 
@@ -48,12 +51,7 @@ Add-Type -AssemblyName System.Windows.Forms
 # if you don't specify both a src and a dst, dst drive will be prompted and then this path added on
 # no slash at the front or end please
 $defaultDstPath = "Reloc8d"
-#$defaultDstPath = "Program Files\Reloc8d"
-
 # so "Reloc8d" would move C:\Games\Fortnite to X:\Reloc8d\Fortnite where X is the dst drive selected
-
-#Set-ItemProperty -Path "X:\Reloc8d" -Name Attributes -Value ('Hidden','System')
-# 'System' means that Windows Explorer won't show unless "Show protected OS files" is checked
 
 
 # Display a folder selection dialog
@@ -79,7 +77,7 @@ function Select-Folder
 
 function Select-NTFSDrive
 {
-    param 
+    param
     (
         # device id of a drive to exclude from the list (e.g. "C:")
         [string]$Exclude = $null
@@ -119,12 +117,12 @@ function Select-NTFSDrive
 
     # Set the ComboBox display member (the property that will be displayed for each item)
     $comboBox.DisplayMember = 'DisplayName'
-    
+
     # Populate ComboBox with drive letters and labels
     foreach ($drive in $drives)
     {
         $displayText = "$($drive.VolumeName) ($($drive.DeviceID)) - $(ConvertTo-HumanReadable -Bytes $drive.FreeSpace -DecimalDigits 1) free / $(ConvertTo-HumanReadable -Bytes $drive.Size -DecimalDigits 1) total  "
-        
+
         # this command is somehow adding to the returned data!
         $null = $comboBox.Items.Add([PSCustomObject]@{
                 DriveLetter = $drive.DeviceID
@@ -132,13 +130,13 @@ function Select-NTFSDrive
                 DisplayName = $displayText
             })
     }
-    
+
     # If no NTFS drives are found, display an error message and return
     if ($comboBox.Items.Count -eq 0)
     {
         $null = [System.Windows.Forms.MessageBox]::Show("No NTFS drives found.")
         return $null
-    } 
+    }
 
     # Create the OK button
     $okButton = New-Object System.Windows.Forms.Button
@@ -160,7 +158,7 @@ function Select-NTFSDrive
     # Add controls to the form
     $form.Controls.Add($comboBox)
     $form.Controls.Add($okButton)
-   
+
     # Show the form and wait for user input
     $null = $form.ShowDialog()
 
@@ -286,7 +284,6 @@ if (-not $src)
         Write-Host "Error: No source folder selected." -ForegroundColor Red
         exit 1
     }
-    
 }
 
 Write-Verbose "Testing source path: $src"
@@ -319,6 +316,8 @@ catch
 }
 
 
+$dstDrive = $null
+
 # If dst not provided as cmd line argument, show folder selection dialog
 if (-not $dst)
 {
@@ -340,14 +339,18 @@ if (-not $dst)
 
         $reloc8dFolder = "${dstDrive}\$defaultDstPath"
 
-        $dst = Join-Path -Path $reloc8dFolder -ChildPath ("\$(Split-Path -Path $src -Leaf )" )
+        $dst = Join-Path -Path $reloc8dFolder -ChildPath "\$(Split-Path -Path $src -Leaf )"
 
         # now, create the directory if necessary
         if (-not (Test-Path -Path $reloc8dFolder))
         {
             Write-Host "Creating reloc8d folder: $reloc8dFolder..." -ForegroundColor Magenta
-            New-Item -Path $reloc8dFolder -ItemType Directory -Force
+            New-Item -Path $reloc8dFolder -ItemType Directory -Force | Out-Null
         }
+
+        # TODO: set permissions to hide the folder from Windows Explorer
+        # Set-ItemProperty -Path "X:\Reloc8d" -Name Attributes -Value ('Hidden','System')
+        # 'System' means that Windows Explorer won't show unless "Show protected OS files" is checked
     }
 
     if (-not $dst)
@@ -367,7 +370,7 @@ if (Test-Path -Path $dst)
     {
         $dstItem = Get-Item $dst
         $dstAttributes = $dstItem.Attributes
-        
+
         if ($dstAttributes -band [System.IO.FileAttributes]::ReparsePoint)
         {
             Write-Host "Destination folder '$dst' is a junction/symlink. Removing..." -ForegroundColor Yellow
@@ -381,7 +384,7 @@ if (Test-Path -Path $dst)
             Write-Host "Destination '$dst' already exists but isn't a folder.  Exiting..." -ForegroundColor Red
             exit 1
         }
-        else   
+        else
         {
             $contents = Get-ChildItem $dst
 
@@ -415,14 +418,14 @@ Do you want to move the source to a folder inside this one named $srcFolderName
 
                     $newDstItem = Get-Item $newDst
                     $newDstAttributes = $newDstItem.Attributes
-                    
+
                     if ($newDstAttributes -band [System.IO.FileAttributes]::ReparsePoint)
                     {
                         Write-Host "Implied destination folder '$newDst' is a junction/symlink. Removing..." -ForegroundColor Yellow
                         $newDstItem.Delete()   # deletes just the junction link file without prompt
                         $dst = $newDst
                     }
-                    else 
+                    else
                     {
                         Write-Host "Error: Destination folder '$dst' exists and already has a '$srcFolderName' subfolder. Exiting." -ForegroundColor Red
                         exit 1
@@ -446,9 +449,9 @@ Do you want to move the source to a folder inside this one named $srcFolderName
         exit 1
     }
 }
-else 
+else
 {
-    # dst doesn't exist atm 
+    # dst doesn't exist atm
     # (this must have been specified as cmd line argument or it was constructed using $defaultDstPath)
     # test we can create it first
     try
@@ -464,25 +467,54 @@ else
 }
 
 
-Write-Host "Source: $src"
-Write-Host "Destination: $dst"
-Write-Host
+if ($null -eq $dstDrive -or (-not $dstDrive))
+{
+    # Extract the drive letter from the path
+    # everything up to the first forward slash (/)
+    $dstDrive = ($dst -split '[\\/]')[0]
+}
+
+# strip the trailing ":" from the drive letter
+$dstDrive = $dstDrive.TrimEnd(":")
+
+
+if (-not $NoSizeCheck)
+{
+    # Get the total size of the folder (recursively)
+    Write-Verbose "Calculating source folder size..."
+    $srcSize = Get-ChildItem -Path $src -Recurse -File | Measure-Object -Property Length -Sum | Select-Object -ExpandProperty Sum
+
+    # calculate space free on the selected drive
+    $dstDriveFree = Get-PSDrive -Name $dstDrive | Select-Object -ExpandProperty Free
+
+    Write-Host "Reloc8ing $src ($(ConvertTo-HumanReadable -Bytes $srcSize)) ⏩ $dst (${dstDrive}: $(ConvertTo-HumanReadable -Bytes $dstDriveFree) Free)" -ForegroundColor Cyan
+    if ($srcSize -ge $dstDriveFree)
+    {
+        Write-Host "Error: Not enough free space on destination drive." -ForegroundColor Red
+        exit 1
+    }
+}
+else
+{
+    Write-Host "Reloc8ing $src ⏩ $dst" -ForegroundColor Cyan
+    Write-Host "Skipping size checks as -NoSizeCheck was specified." -ForegroundColor Yellow
+}
+
 
 # prevent attempts to reloc8 a folder into one of its subfolders
 # e.g. C:\Games\Fortnite into C:\Games\Fortnite\SubDir
-
+#
 # Check if $dst is a subfolder of $src
-if ([System.IO.Path]::GetFullPath($dst) -like ([System.IO.Path]::GetFullPath($src) + "\*")) 
+if ([System.IO.Path]::GetFullPath($dst) -like ([System.IO.Path]::GetFullPath($src) + "\*"))
 {
     Write-Output "Error: Cannot move $src into a subfolder of itself!" -ForegroundColor Red
     exit 1
 }
 
-
 if (-not $Force)
-{   
+{
     Write-Host "All seems good" -ForegroundColor Yellow
-    Read-Host -Prompt "Press Enter if happy"
+    Read-Host -Prompt "Press Enter if happy (else Ctrl-C)"
 }
 
 
@@ -504,11 +536,11 @@ catch
 }
 
 # Create NTFS junction
-# (like mklink /J $src $dst)
 Write-Host "Creating NTFS junction: '$src' ==> '$dst' ..." -ForegroundColor Cyan
 
 try
 {
+    # like doing mklink /J $src $dst
     New-Item -Path $src -ItemType Junction -Target $dst | Out-Null
 }
 catch
